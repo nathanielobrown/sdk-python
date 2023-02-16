@@ -688,8 +688,19 @@ class _ActivityInboundImpl(ActivityInboundInterceptor):
                     current_context = contextvars.copy_context()
                     args.insert(0, func)
                     func = current_context.run
-                # Invoke
-                return await loop.run_in_executor(input.executor, func, *args)
+
+                # This would be configurable, maybe an parameter like:
+                # `auto_heartbeat_interval: Optional[timedelta] = None` to
+                # `activity.defn` that then somehow get's passed down to this point.
+                heartbeat_task = asyncio.create_task(
+                    _heartbeat_every(heartbeat, timedelta(seconds=5))
+                )
+                try:
+                    # Invoke
+                    return await loop.run_in_executor(input.executor, func, *args)
+                finally:
+                    heartbeat_task.cancel()
+                    await asyncio.wait([heartbeat_task])
             finally:
                 if shared_manager:
                     await shared_manager.unregister_heartbeater(info.task_token)
@@ -926,3 +937,10 @@ def _proto_to_non_zero_timedelta(
     if dur.nanos == 0 and dur.seconds == 0:
         return None
     return dur.ToTimedelta()
+
+
+async def _heartbeat_every(heartbeat_func: Callable, interval: timedelta, *details: Any) -> None:
+    seconds = interval.total_seconds()
+    while True:
+        await asyncio.sleep(seconds)
+        heartbeat_func(*details)
